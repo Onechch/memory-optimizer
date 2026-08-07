@@ -15,7 +15,7 @@ WorkBuddy 记忆优化技能。解决两类问题：**记忆写错层级**（用
 
 ## 安装
 
-将本仓库内容复制到 WorkBuddy 技能目录（目录名须为 `memory-optimizer`）：
+将本仓库内容放到 WorkBuddy 技能目录（目录名须为 `memory-optimizer`）：
 
 ```bash
 # 用户级（跨所有项目，推荐）
@@ -26,6 +26,32 @@ cp -r memory-optimizer <workspace>/.workbuddy/skills/
 ```
 
 也可在 WorkBuddy 技能管理中直接导入本仓库。
+
+### 对话式安装（推荐）
+
+无需手动敲命令——直接对你的智能体说一句话即可。支持执行命令 / 联网下载的智能体（如 WorkBuddy）会自动完成下载与安装：
+
+- **WorkBuddy / 通用智能体**：
+  > 请安装 GitHub 上的 memory-optimizer 记忆优化技能，仓库地址是 https://github.com/&lt;github用户名&gt;/memory-optimizer.git，安装到你的用户级技能目录。
+
+- **若智能体自带技能市场**（如 WorkBuddy 的技能市场安装）：
+  > 安装 memory-optimizer 技能
+
+底层执行的命令（供参考 / 排错）：
+
+```bash
+# 方式 A：git clone 直接落入技能目录（目录名自动为 memory-optimizer）
+git clone https://github.com/<github用户名>/memory-optimizer.git \
+    ~/.workbuddy/skills/memory-optimizer
+
+# 方式 B：下载仓库 zip 包后解压（无需 git）
+curl -L https://github.com/<github用户名>/memory-optimizer/archive/refs/heads/main.zip -o /tmp/memory-optimizer.zip
+unzip /tmp/memory-optimizer.zip -d /tmp/
+cp -r /tmp/memory-optimizer-main ~/.workbuddy/skills/memory-optimizer
+```
+
+> 说明：`<github用户名>` 替换为你的实际 GitHub 用户名；若默认分支为 `master` 请把上面两处的 `main` 改为 `master`。
+> 安装后 WorkBuddy 会在下次会话自动识别该技能，无需额外启用；其他智能体按其技能目录约定放置即可。
 
 ## 使用
 
