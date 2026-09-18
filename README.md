@@ -94,4 +94,4 @@ memory-optimizer/
 - **记忆写入原则**：报告可查的信息只记来源指针（`- [来源] <摘要> | 位置：<路径> | 关键词：<词>`），
   不重复存储全文；仅报告未含且具长期价值者才作为独立条目存储。详见 `references/memory-architecture.md`。
 - 详细记忆系统说明见 `references/memory-architecture.md`。
-- 许可证：本仓库未附带 LICENSE，如需公开发布请自行添加（建议 MIT）。
+- 许可证：MIT（见 `LICENSE` 文件）。
