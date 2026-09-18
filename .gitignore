@@ -1,0 +1,12 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyc
+
+# Build artifacts (produced by package_skill.py)
+*.zip
+
+# Editor / OS
+.idea/
+.vscode/
+.DS_Store
