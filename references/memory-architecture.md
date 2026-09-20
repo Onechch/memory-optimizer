@@ -64,16 +64,73 @@ Rationale: keeps total memory volume bounded and avoids redundant duplication bu
 The `check_memory_health.py` script can flag report-redundant entries when given
 `--reports-dir <this-session report dir>` (verbatim substring match).
 
+## External-file storage pattern (context reduction)
+
+This is the **default storage architecture** of the skill. Its purpose is to keep the
+main memory files tiny so they can be loaded at session start without blowing the context
+window; full detail lives in separate note files that are only fetched on demand.
+
+**Directory convention**
+
+- User-level details: `<home>/memory_notes/`   (where `<home>` is `~/.workbuddy`)
+- Project-level details: `<workspace>/.workbuddy/memory/notes/`
+
+**Index entry format (the ONLY thing stored in the main memory file)**
+
+```
+- [<category>:<keyword>] <one-line summary> → <notes relative path>
+```
+
+- `<category>`: `env` (env/toolchain) / `pref` (preference) / `proj` (project decision) /
+  `lesson` (lesson learned) / `fact` (fact) / `src` (source pointer to a report)
+- `<keyword>`: retrieval trigger — when it matches the current task, fetch the note file.
+- User-level example:
+  `- [env:python-venv] managed Python venv path quirk on Windows (/ resolves to D:) → memory_notes/2026-08-30-python-venv.md`
+- Project-level example:
+  `- [lesson:git-bash] WorkBuddy Bash shim flaky dirname error, use git -C → notes/2026-09-18-git-bash-flaky.md`
+
+**External note file format**
+
+`memory_notes/2026-08-30-python-venv.md`:
+
+```
+# managed Python venv path quirk on Windows
+<full content: background, repro, root cause, workaround, scope/boundaries ...>
+```
+
+**Retrieval / load flow (the key to context reduction)**
+
+1. At session start, load **only the main memory index file** into context (it is tiny).
+2. When a `<keyword>` or `<summary>` in the index matches the current task, read **only the
+   corresponding external note file** — not the whole memory corpus.
+3. Unmatched external files stay unloaded, naturally bounding context usage.
+
+**Relationship to the source-pointer rule**
+
+Report dedup is a special case: if the info is already in this session's report, the external
+file *is* that report, and the main file stores only a `[src:...]` source pointer (location +
+keywords) instead of creating a new note. Externalization is the more general default rule.
+
 ## Health rules
 
 - Char limits: user 4000, project 3000. Warn at >= 90%; never exceed without condensing.
+  (With the external-file pattern the main index file usually stays far below these limits.)
 - Maintain a single canonical copy of each fact. Do NOT store the same fact in both
   layers (cross-layer duplication is a defect).
+- **Main memory files are index-only.** Each entry should be a lightweight pointer
+  (`[<category>:<keyword>] summary → notes/path.md`). A non-index line exceeding ~160 chars
+  is a defect — it should be externalized into a note file and replaced by a pointer.
+  The `check_memory_health.py` script flags such "inline-too-long" entries.
+- **Index pointers must resolve.** Every `→ notes/path.md` pointer must point to an existing
+  note file. A broken reference (missing file) is a defect; the script flags it as
+  `external_refs.broken`.
+- **Orphan notes** (note files not referenced by any index) are flagged for review — they may
+  be intentional (archived) but usually indicate a missing pointer.
 - Report redundancy is a defect too: an entry that duplicates content already present in a
   current-session report should be replaced by a source pointer (see above). Use
   `check_memory_health.py --reports-dir` to detect.
 - Daily logs are supplemental and must NOT replace the normal reply or a user-requested
-  deliverable. Prefer a source pointer (location + keywords) over copying report content
+  deliverable. Prefer an index pointer (location / note path + keywords) over copying content
   verbatim.
 
 ## Retention / distillation policy

@@ -8,6 +8,10 @@ Scans user-level and project-level memory, and reports:
   - stale markers (临时 / 草稿 / TODO / WIP ...)
   - report-redundant entries: memory lines that verbatim duplicate content in a
     this-session report directory (pass --reports-dir to enable)
+  - external-file storage pattern validation:
+      * broken index pointers: `-> notes/path.md` entries whose target file is missing
+      * inline-too-long: non-index lines exceeding INLINE_MAX chars (should be externalized)
+      * orphan notes: note files not referenced by any index entry
 
 Outputs a human-readable report by default, or JSON with --json.
 
@@ -15,7 +19,9 @@ Usage:
   python check_memory_health.py \
       --workspace "C:/path/to/project" \
       --home "C:/Users/xianyu/.workbuddy" \
-      --days 30 [--reports-dir "C:/path/to/reports"] [--json]
+      --days 30 [--reports-dir "C:/path/to/reports"] \
+      [--user-notes "C:/.../memory_notes"] [--project-notes "C:/.../memory/notes"] \
+      [--json]
 """
 import argparse
 import json
@@ -35,6 +41,12 @@ MIN_DUP_LEN = 6
 # Lines shorter than this (normalized) are ignored for report-redundancy detection,
 # to avoid false positives from very short / common tokens.
 REDUNDANT_MIN_LEN = 10
+
+# A non-index memory line longer than this (chars) is flagged as "should be externalized".
+INLINE_MAX = 160
+
+# Matches an index-pointer target: `-> notes/path.md` or `位置：notes/path.md`.
+INDEX_RE = re.compile(r"(?:→\s*|位置[:：]\s*)(\S+\.md)")
 
 
 def parse_date_from_filename(name):
@@ -161,11 +173,81 @@ def detect_report_redundancy(lines, reports_norm):
     return hits
 
 
-def build_report(home, workspace, days, today, reports_dir=None):
+def is_index_entry(line):
+    """Return the referenced note path if `line` is an index-pointer entry, else None."""
+    m = INDEX_RE.search(line)
+    return m.group(1) if m else None
+
+
+def detect_external_refs(lines, base_dir):
+    """Validate index pointers resolve to existing note files.
+
+    Returns (broken_list, referenced_basenames) where broken_list is a list of
+    {"line", "target"} for pointers whose target file is missing, and
+    referenced_basenames is the set of note-file basenames referenced by the lines.
+    """
+    broken = []
+    referenced = set()
+    for ln in lines:
+        rel = is_index_entry(ln)
+        if not rel:
+            continue
+        basename = os.path.basename(rel)
+        referenced.add(basename)
+        if base_dir:
+            full = os.path.normpath(os.path.join(base_dir, rel))
+            if not os.path.isfile(full):
+                broken.append({"line": ln.strip(), "target": rel})
+        else:
+            broken.append({"line": ln.strip(), "target": rel})
+    return broken, referenced
+
+
+def detect_inline_too_long(lines):
+    """Flag non-index lines exceeding INLINE_MAX chars (candidates to externalize)."""
+    hits = []
+    for ln in lines:
+        s = ln.strip()
+        if not s:
+            continue
+        if is_index_entry(ln):
+            continue
+        if len(s) > INLINE_MAX:
+            hits.append(s)
+    return hits
+
+
+def collect_note_basenames(notes_dir):
+    """Return set of .md basenames under notes_dir (recursively)."""
+    out = set()
+    if not notes_dir or not os.path.isdir(notes_dir):
+        return out
+    for root, _dirs, files in os.walk(notes_dir):
+        for fn in files:
+            if fn.lower().endswith(".md"):
+                out.add(fn)
+    return out
+
+
+def build_report(home, workspace, days, today, reports_dir=None,
+                 user_notes_dir=None, project_notes_dir=None):
     home = os.path.expanduser(home)
     user_mem = os.path.join(home, "MEMORY.md")
     proj_mem_dir = os.path.join(workspace, ".workbuddy", "memory") if workspace else None
     proj_mem = os.path.join(proj_mem_dir, "MEMORY.md") if proj_mem_dir else None
+
+    if user_notes_dir is None:
+        user_notes_dir = os.path.join(home, "memory_notes")
+        user_index_base = home  # index paths are like "memory_notes/x.md" relative to home
+    else:
+        user_index_base = os.path.dirname(user_notes_dir)
+    if project_notes_dir is None:
+        project_notes_dir = os.path.join(
+            workspace, ".workbuddy", "memory", "notes") if workspace else None
+        project_index_base = os.path.join(
+            workspace, ".workbuddy", "memory") if workspace else None
+    else:
+        project_index_base = os.path.dirname(project_notes_dir)
 
     user_text = read_text(user_mem)
     proj_text = read_text(proj_mem) if proj_mem else None
@@ -189,6 +271,13 @@ def build_report(home, workspace, days, today, reports_dir=None):
         "duplicates": {"within_user": [], "within_project": [], "cross_layer": []},
         "stale_markers": {"user": [], "project": []},
         "report_redundant": {"user": [], "project": [], "daily_logs": []},
+        "external_refs": {
+            "broken": [],
+            "inline_too_long": {"user": [], "project": []},
+            "orphan_notes": {"user": [], "project": []},
+            "user_notes_dir": user_notes_dir,
+            "project_notes_dir": project_notes_dir,
+        },
         "issues": 0,
     }
 
@@ -264,6 +353,31 @@ def build_report(home, workspace, days, today, reports_dir=None):
             + len(report["report_redundant"]["project"])
             + sum(len(x["hits"]) for x in report["report_redundant"]["daily_logs"])
         )
+
+    # external-file storage pattern validation
+    if report["user"]["exists"]:
+        ref_u = set()
+        if user_index_base:
+            broken_u, ref_u = detect_external_refs(collect_lines(user_text), user_index_base)
+            report["external_refs"]["broken"].extend(broken_u)
+            orphans = sorted(collect_note_basenames(user_notes_dir) - ref_u)
+            report["external_refs"]["orphan_notes"]["user"] = orphans
+        report["external_refs"]["inline_too_long"]["user"] = detect_inline_too_long(
+            collect_lines(user_text))
+    if report["project"]["exists"]:
+        ref_p = set()
+        if project_index_base:
+            broken_p, ref_p = detect_external_refs(collect_lines(proj_text), project_index_base)
+            report["external_refs"]["broken"].extend(broken_p)
+            orphans = sorted(collect_note_basenames(project_notes_dir) - ref_p)
+            report["external_refs"]["orphan_notes"]["project"] = orphans
+        report["external_refs"]["inline_too_long"]["project"] = detect_inline_too_long(
+            collect_lines(proj_text))
+    report["issues"] += (
+        len(report["external_refs"]["broken"])
+        + len(report["external_refs"]["inline_too_long"]["user"])
+        + len(report["external_refs"]["inline_too_long"]["project"])
+    )
 
     return report
 
@@ -344,6 +458,32 @@ def render_text(report):
         L.append("  (none / --reports-dir not provided)")
 
     L.append("")
+    L.append("EXTERNAL-FILE STORAGE PATTERN:")
+    er = report["external_refs"]
+    if er["broken"]:
+        L.append("  BROKEN INDEX POINTERS (target note file missing):")
+        for b in er["broken"]:
+            L.append("    - {}  ->  {}".format(b["line"][:90], b["target"]))
+    else:
+        L.append("  broken index pointers: (none)")
+    if er["inline_too_long"]["user"] or er["inline_too_long"]["project"]:
+        L.append("  INLINE-TOO-LONG (non-index lines > {} chars; should be externalized):".format(INLINE_MAX))
+        for s in er["inline_too_long"]["user"]:
+            L.append("    user: {}".format(s[:120]))
+        for s in er["inline_too_long"]["project"]:
+            L.append("    project: {}".format(s[:120]))
+    else:
+        L.append("  inline-too-long: (none)")
+    if er["orphan_notes"]["user"] or er["orphan_notes"]["project"]:
+        L.append("  ORPHAN NOTES (not referenced by any index; review for missing pointer):")
+        for n in er["orphan_notes"]["user"]:
+            L.append("    user: {}".format(n))
+        for n in er["orphan_notes"]["project"]:
+            L.append("    project: {}".format(n))
+    else:
+        L.append("  orphan notes: (none)")
+
+    L.append("")
     L.append("TOTAL ISSUES FLAGGED: {}".format(report["issues"]))
     L.append("=" * 60)
     return "\n".join(L)
@@ -357,11 +497,18 @@ def main():
     ap.add_argument("--days", type=int, default=RETENTION_DAYS, help="retention window in days")
     ap.add_argument("--reports-dir", default=None,
                     help="dir of this-session report files; flag entries that duplicate report content")
+    ap.add_argument("--user-notes", default=None,
+                    help="user-level notes dir (default: <home>/memory_notes)")
+    ap.add_argument("--project-notes", default=None,
+                    help="project-level notes dir (default: <workspace>/.workbuddy/memory/notes)")
     ap.add_argument("--json", action="store_true", help="output JSON instead of text")
     args = ap.parse_args()
 
     today = datetime.now().date()
-    report = build_report(args.home, args.workspace, args.days, today, reports_dir=args.reports_dir)
+    report = build_report(args.home, args.workspace, args.days, today,
+                          reports_dir=args.reports_dir,
+                          user_notes_dir=args.user_notes,
+                          project_notes_dir=args.project_notes)
 
     if args.json:
         print(json.dumps(report, ensure_ascii=False, indent=2))
